@@ -1,0 +1,422 @@
+import { useState, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { useLive } from '../../state/live';
+import { repos } from '../../state/repos';
+import { isGainGoal, isMaintainGoal, currentWeightKg } from '../../domain/goal';
+import { displayWeight } from '../../domain/units';
+import { todayISO, addDays } from '../../data/ids';
+import { getMondayOfWeek, MS_PER_DAY } from '../../lib/date';
+import { round1 } from '../../lib/num';
+import { hapticLight } from '../../lib/haptics';
+import { Icon, Badge, Skeleton, Card, SegmentedControl, Sheet, Button, SlideScreen, SlideHeader } from '../kit';
+import { KgWeekChart, WeekChart } from './GoalScreen';
+import { weekNumber, fmtWeekRange } from './chartUtils';
+import type { Goal, WeightEntry, User, FoodItem } from '../../domain/types';
+
+// ── Stat card (used in goal overview) ───────────────────────────────────────
+
+function StatCard({ value, label }: { value: string; label: string }) {
+  return (
+    <div className="flex flex-col items-center justify-center rounded-card bg-surface shadow-card px-2 py-2.5">
+      <span className="text-callout font-semibold text-content">{value}</span>
+      <span className="-mt-0.5 whitespace-pre-line text-center text-subhead text-content-secondary leading-tight">{label}</span>
+    </div>
+  );
+}
+
+// ── Chart section (mirrors GoalScreen chart card) ────────────────────────────
+
+type ChartTab = 'overview' | 'week';
+
+function PastGoalChart({
+  goal, weights, user, items,
+}: {
+  goal: Goal; weights: WeightEntry[]; user: User | null; items: FoodItem[];
+}) {
+  // For past goals, "today" is capped at the goal's target date
+  const today = todayISO();
+  const chartToday = goal.targetDate < today ? goal.targetDate : today;
+
+  const [tab, setTab] = useState<ChartTab>('overview');
+  const [weekOffset, setWeekOffset] = useState(0); // 0 = goal's end week
+  const [navDir, setNavDir] = useState<1 | -1 | 0>(0);
+  const [animKeys, setAnimKeys] = useState({ overview: 0, week: 0 });
+
+  function handleTabChange(t: ChartTab) {
+    setTab(t);
+    setAnimKeys((prev) => ({ ...prev, [t]: prev[t] + 1 }));
+  }
+
+  // Bounds: clamp to [goal start week … goal end week]
+  const goalEndMonday = getMondayOfWeek(chartToday);
+  const goalStartMonday = getMondayOfWeek(goal.startDate);
+  const minWeekOffset = Math.round(
+    (Date.parse(goalStartMonday + 'T00:00:00') - Date.parse(goalEndMonday + 'T00:00:00')) /
+      (7 * MS_PER_DAY),
+  );
+  const prevWeekDisabled = weekOffset <= minWeekOffset;
+  const nextWeekDisabled = weekOffset >= 0;
+
+  // Week label (relative to goal start, not real today)
+  const wNum = weekNumber(goal.startDate, weekOffset, chartToday);
+
+  const viewedWeekStart = addDays(goalEndMonday, weekOffset * 7);
+  const viewedWeekEnd   = addDays(viewedWeekStart, 6);
+  const weekRangeLabel  = fmtWeekRange(viewedWeekStart, viewedWeekEnd);
+
+  // Swipe handling — mirrors GoalScreen chart card
+  const cardWrapRef = useRef<HTMLDivElement>(null);
+  const swipeStart  = useRef<{ x: number; y: number } | null>(null);
+  const swipeIsH    = useRef<boolean | null>(null);
+
+  function onTouchStart(e: React.TouchEvent) {
+    swipeStart.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+    swipeIsH.current   = null;
+    if (cardWrapRef.current) cardWrapRef.current.style.transition = 'none';
+  }
+  function onTouchMove(e: React.TouchEvent) {
+    if (!swipeStart.current || !cardWrapRef.current) return;
+    const dx = e.touches[0].clientX - swipeStart.current.x;
+    const dy = e.touches[0].clientY - swipeStart.current.y;
+    if (swipeIsH.current === null && (Math.abs(dx) > 6 || Math.abs(dy) > 6)) {
+      swipeIsH.current = Math.abs(dx) > Math.abs(dy);
+    }
+    if (!swipeIsH.current) return;
+    const atBack = prevWeekDisabled && dx > 0;
+    const atFwd  = nextWeekDisabled && dx < 0;
+    if (atBack || atFwd) {
+      cardWrapRef.current.style.transform = `translateX(${(dx * 0.2).toFixed(1)}px)`;
+    }
+  }
+  function onTouchEnd(e: React.TouchEvent) {
+    if (!swipeStart.current) return;
+    const dx = e.changedTouches[0].clientX - swipeStart.current.x;
+    const dy = e.changedTouches[0].clientY - swipeStart.current.y;
+    swipeStart.current = null;
+    if (cardWrapRef.current) {
+      cardWrapRef.current.style.transition = 'transform 280ms cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+      cardWrapRef.current.style.transform  = 'translateX(0)';
+    }
+    if (!swipeIsH.current || Math.abs(dx) < 40 || Math.abs(dy) > Math.abs(dx)) return;
+    if (dx > 0 && !prevWeekDisabled) {
+      hapticLight(); setNavDir(-1); setWeekOffset((w) => w - 1); setAnimKeys((prev) => ({ ...prev, [tab]: prev[tab] + 1 }));
+    } else if (dx < 0 && !nextWeekDisabled) {
+      hapticLight(); setNavDir(1); setWeekOffset((w) => w + 1); setAnimKeys((prev) => ({ ...prev, [tab]: prev[tab] + 1 }));
+    }
+  }
+
+  return (
+    <div ref={cardWrapRef} style={{ willChange: 'transform' }}>
+      <Card
+        padded={false}
+        className="pt-6 pb-6 px-4 rounded-main shadow-card-lg"
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
+        onTouchEnd={onTouchEnd}
+      >
+        {/* Segmented control — centered */}
+        <div className="mb-4 flex justify-center">
+          <SegmentedControl<ChartTab>
+            value={tab}
+            onChange={handleTabChange}
+            options={[
+              { value: 'overview', label: 'Weight' },
+              { value: 'week',     label: 'Calories' },
+            ]}
+          />
+        </div>
+
+        {/* Week navigation */}
+        <div className="mb-1 flex items-center justify-between">
+          <button
+            onClick={() => { hapticLight(); setNavDir(-1); setWeekOffset((w) => w - 1); setAnimKeys((prev) => ({ ...prev, [tab]: prev[tab] + 1 })); }}
+            aria-label="Previous week"
+            disabled={prevWeekDisabled}
+            className="flex h-11 w-11 items-center justify-center rounded-control text-content-secondary active:bg-surface-sunken disabled:opacity-40 disabled:cursor-default"
+          >
+            <Icon name="chevronLeft" size={22} strokeWidth={2.25} />
+          </button>
+          <div className="text-center">
+            <div className="text-subhead font-semibold text-content">Week {wNum}</div>
+            <div className="text-subhead text-content-secondary">{weekRangeLabel}</div>
+          </div>
+          <button
+            onClick={() => { hapticLight(); setNavDir(1); setWeekOffset((w) => w + 1); setAnimKeys((prev) => ({ ...prev, [tab]: prev[tab] + 1 })); }}
+            aria-label="Next week"
+            disabled={nextWeekDisabled}
+            className="flex h-11 w-11 items-center justify-center rounded-control text-content-secondary active:bg-surface-sunken disabled:opacity-40 disabled:cursor-default"
+          >
+            <Icon name="chevronRight" size={22} strokeWidth={2.25} />
+          </button>
+        </div>
+
+        {/* Chart */}
+        <div className="mt-3">
+          {tab === 'overview' ? (
+            <KgWeekChart
+              key={animKeys.overview}
+              goal={goal}
+              weights={weights}
+              weekOffset={weekOffset}
+              today={chartToday}
+              navDir={navDir}
+              units={user?.units ?? 'kg'}
+            />
+          ) : (
+            <WeekChart
+              goal={goal}
+              weights={weights}
+              user={user}
+              items={items}
+              weekOffset={weekOffset}
+              today={chartToday}
+              animTrigger={animKeys.week}
+              navDir={navDir}
+            />
+          )}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ── Past goal detail screen ──────────────────────────────────────────────────
+
+function PastGoalDetail({
+  goalId, onBack,
+}: {
+  goalId: string; onBack: () => void;
+}) {
+  const [exiting, setExiting] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+  async function deleteGoal(id: string) {
+    await repos.goals.remove(id);
+    goBack();
+  }
+
+  const data = useLive(async () => {
+    const [allGoals, allWeights, allItems, user] = await Promise.all([
+      repos.goals.getAll(),
+      repos.weights.all(),
+      repos.foodItems.all(),
+      repos.user.get(),
+    ]);
+    const goal = allGoals.find((g) => g.id === goalId);
+    if (!goal) return null;
+    return { goal, weights: allWeights as WeightEntry[], items: allItems as FoodItem[], user: user ?? null };
+  }, [goalId]);
+
+  function goBack() {
+    setExiting(true);
+    setTimeout(onBack, 280);
+  }
+
+  if (data === null) {
+    return (
+      <SlideScreen exiting={exiting} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}>
+        <SlideHeader title="Goal" onBack={goBack} scrolled={scrolled} />
+        <p className="px-6 text-subhead text-content-muted">Goal not found.</p>
+      </SlideScreen>
+    );
+  }
+
+  if (data === undefined) {
+    return (
+      <SlideScreen exiting={exiting} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}>
+        <div className="p-6 space-y-3">
+          <Skeleton className="h-7 w-40" />
+          <Skeleton className="h-36 w-full rounded-main" />
+          <Skeleton className="h-48 w-full rounded-card" />
+        </div>
+      </SlideScreen>
+    );
+  }
+
+  const { goal, weights, items, user } = data;
+  const units = user?.units ?? 'kg';
+  const gainGoal = isGainGoal(goal);
+  const maintainGoal = isMaintainGoal(goal);
+  const nowKg = currentWeightKg(weights) ?? goal.startWeightKg;
+  const lostKg = Math.max(0, round1(gainGoal ? nowKg - goal.startWeightKg : goal.startWeightKg - nowKg));
+  const netChangeKg = round1(nowKg - goal.startWeightKg); // maintain: signed, can be ±
+  // endedDate is the real end-of-goal date; targetDate is only reliable for
+  // lose/gain goals ended on schedule — for maintain goals targetDate is a
+  // meaningless far-future sentinel (see domain/types.ts), so endedDate is
+  // required there. Falls back to targetDate for goals ended before endedDate
+  // existed.
+  const daysTaken = Math.max(1, Math.round(
+    (Date.parse(goal.endedDate ?? goal.targetDate) - Date.parse(goal.startDate)) / MS_PER_DAY,
+  ));
+  const goalAchieved = goal.status === 'completed' && (
+    gainGoal ? nowKg >= goal.targetWeightKg : nowKg <= goal.targetWeightKg
+  );
+
+  const fmtDate = (iso: string) =>
+    new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  const trashButton = (
+    <button
+      onClick={() => setShowDeleteConfirm(true)}
+      aria-label="Delete goal"
+      className="flex h-10 w-10 items-center justify-center rounded-control text-danger active:bg-surface-sunken"
+    >
+      <Icon name="trash" size={20} strokeWidth={1.75} />
+    </button>
+  );
+
+  return (
+    <SlideScreen exiting={exiting} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}>
+      <SlideHeader title="" onBack={goBack} scrolled={scrolled} rightAction={trashButton} />
+
+      <div className="px-6 pb-8 space-y-4">
+
+        {/* ── Section 1: Outcome summary ── */}
+        <div className="w-full rounded-main pt-2" style={{ boxShadow: 'inset 0 0 0 1px var(--color-border-field)' }}>
+          <div className="pt-5 px-6 pb-5">
+            <h1 className="text-headline font-semibold text-center text-content">{goal.name}</h1>
+            <p className="mt-0 text-subhead text-content-secondary text-center mb-4">
+              {maintainGoal
+                ? <>Range {displayWeight(goal.weightRangeFloorKg ?? goal.targetWeightKg, units)}–{displayWeight(goal.weightRangeCeilingKg ?? goal.targetWeightKg, units)}</>
+                : <>Goal {displayWeight(goal.targetWeightKg, units)} · by {fmtDate(goal.targetDate)}</>}
+            </p>
+            <div className="grid grid-cols-3 gap-2">
+              <StatCard
+                value={maintainGoal ? `${netChangeKg > 0 ? '+' : ''}${displayWeight(netChangeKg, units)}` : displayWeight(lostKg, units)}
+                label={`Weight\n${maintainGoal ? 'change' : gainGoal ? 'gained' : 'lost'}`}
+              />
+              <StatCard value={displayWeight(nowKg, units)} label={'Final\nweight'} />
+              <StatCard value={String(daysTaken)} label={'Total\ndays'} />
+            </div>
+            <div className="mt-3 flex justify-center">
+              <Badge status={goalAchieved ? 'success' : goal.status === 'completed' ? 'success' : 'neutral'}>
+                {goalAchieved ? 'Goal achieved' : goal.status === 'completed' ? 'Completed' : 'Ended'}
+              </Badge>
+            </div>
+          </div>
+        </div>
+
+        {/* ── Section 2: Full chart (same as GoalScreen) ── */}
+        <PastGoalChart goal={goal} weights={weights} user={user} items={items} />
+      </div>
+
+      {showDeleteConfirm && (
+        <Sheet
+          title="Delete goal"
+          onClose={() => setShowDeleteConfirm(false)}
+          footer={
+            <div className="space-y-2">
+              <Button size="lg" onClick={() => setShowDeleteConfirm(false)}>Cancel</Button>
+              <Button variant="outline" size="lg" onClick={() => { void deleteGoal(goal.id); }}>
+                Yes, delete goal
+              </Button>
+            </div>
+          }
+        >
+          <p className="text-subhead text-content-secondary pb-2">
+            This will permanently delete &ldquo;{goal.name}&rdquo; and cannot be undone.
+          </p>
+        </Sheet>
+      )}
+    </SlideScreen>
+  );
+}
+
+// ── Past goals list ──────────────────────────────────────────────────────────
+
+function PastGoalsList({
+  onBack, onSelect,
+}: {
+  onBack: () => void; onSelect: (id: string) => void;
+}) {
+  const [exiting, setExiting] = useState(false);
+  const [scrolled, setScrolled] = useState(false);
+
+  const goals = useLive(async () => {
+    const all = await repos.goals.getAll();
+    return all
+      .filter((g) => g.status !== 'active')
+      .sort((a, b) => b.startDate.localeCompare(a.startDate));
+  }, []);
+
+  function goBack() {
+    setExiting(true);
+    setTimeout(onBack, 280);
+  }
+
+  const fmtDate = (iso: string) =>
+    new Date(iso + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+
+  return (
+    <SlideScreen exiting={exiting} onScroll={(e) => setScrolled(e.currentTarget.scrollTop > 0)}>
+      <SlideHeader title="Past goals" onBack={goBack} scrolled={scrolled} />
+
+      <div className="px-6 pb-8">
+        {goals === undefined ? (
+          <div className="space-y-3">
+            <Skeleton className="h-20 w-full rounded-card" />
+            <Skeleton className="h-20 w-full rounded-card" />
+          </div>
+        ) : goals.length === 0 ? (
+          <p className="text-subhead text-content-muted text-center mt-8">No past goals yet.</p>
+        ) : (
+          <div className="space-y-3">
+            {goals.map((g) => (
+              <button
+                key={g.id}
+                type="button"
+                onClick={() => { hapticLight(); onSelect(g.id); }}
+                className="w-full rounded-card border border-border-subtle bg-surface p-4 text-left shadow-card active:opacity-70"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <p className="text-subhead font-semibold text-content truncate">{g.name}</p>
+                    <p className="text-footnote text-content-secondary mt-0.5">
+                      {isGainGoal(g) ? 'Build muscle' : isMaintainGoal(g) ? 'Maintain weight' : 'Lose weight'}
+                      {' · '}
+                      {isMaintainGoal(g) ? `since ${fmtDate(g.startDate)}` : `${fmtDate(g.startDate)} – ${fmtDate(g.targetDate)}`}
+                    </p>
+                  </div>
+                  <Badge status={g.status === 'completed' ? 'success' : 'neutral'}>
+                    {g.status === 'completed' ? 'Completed' : 'Ended'}
+                  </Badge>
+                </div>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </SlideScreen>
+  );
+}
+
+// ── Portal entry point (rendered from GoalScreen) ────────────────────────────
+
+export function PastGoalsPortal({
+  onClose,
+}: {
+  goal?: Goal; weights?: WeightEntry[]; user?: User | null; onClose: () => void;
+}) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
+  return createPortal(
+    <>
+      <PastGoalsList
+        onBack={onClose}
+        onSelect={setSelectedId}
+      />
+      {selectedId !== null && (
+        <PastGoalDetail
+          goalId={selectedId}
+          onBack={() => setSelectedId(null)}
+        />
+      )}
+    </>,
+    document.body,
+  );
+}
+
+// ── Legacy route exports (kept for App.tsx compatibility, redirect to /goal) ─
+export function PastGoalsScreen() { return null; }
+export function PastGoalDetailScreen() { return null; }

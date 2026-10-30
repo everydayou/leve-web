@@ -1,0 +1,1205 @@
+================================================================
+NUTRITION GOAL TRACKER — PROJECT CONTEXT
+================================================================
+Owner: Marco (marcosilva86@gmail.com)
+Last updated: 2026-07-12, Round 206 (root-caused two recurring Gradle
+build failures to iCloud Drive sync -- the project lived at
+~/Documents/leve and iCloud kept creating stray space-suffixed
+duplicate files (config 2.xml, a duplicate "build 2" folder) that
+broke Android resource merging; moved the project to ~/leve, updated
+every doc's hardcoded path (ANDROID.md, TESTFLIGHT.md, HEALTHKIT.md))
+Full change history: see CHANGELOG.txt (rounds 1-206).
+
+HOW TO READ THIS DOC:
+- This file = current state only. Read it at the start of every chat.
+- CHANGELOG.txt = full per-round history. Open it when you need to know
+  WHY something was decided or what changed in a specific round.
+- Before touching any UI: read section 0B (Design-System Contract) first.
+- If two statements conflict: the higher round number wins.
+
+----------------------------------------------------------------
+0. QUICK STATUS
+----------------------------------------------------------------
+- App is RUNNING on Marco's iPhone (native Capacitor build, free Apple ID).
+  On-device install: DONE as of 2026-06-04 (runbook: INSTALL-iOS.md).
+- THREE PREVIEW SURFACES, each with its OWN separate data store:
+  (1) iPhone native app (Capacitor) — Marco's REAL daily-use data; IndexedDB
+      in the app container; persists across rebuilds/re-signing.
+  (2) Browser dev server (`npm run dev` -> localhost) — real app with
+      hot-reload; IndexedDB local to that browser; SEPARATE from the phone.
+  (3) Double-click demo HTML (file://) — in-memory, resets on refresh.
+  Data does NOT sync between surfaces.
+- V1 FEATURE STATUS: feature-complete and running on phone.
+- VERIFY-ON-MAC REMINDER: after Cowork changes, run on Mac:
+  `npm install` → `npm test` → `npm run build` → `npm run ios:sync`.
+
+----------------------------------------------------------------
+0B. DESIGN-SYSTEM CONTRACT — FIXED RULES (read BEFORE editing any UI)
+----------------------------------------------------------------
+Non-negotiable standing rules. Any chat touching src/ui MUST follow them.
+
+1. COMPONENTS FIRST. Build UI from kit atoms in src/ui/kit: Button/IconButton,
+   Sheet, LabeledInput, NumberField, Card/Surface, StatTile, ProgressBar/
+   GaugeArc, Badge, SegmentedControl, FilterPills, Icon, etc. NEVER hand-roll
+   a button/input/sheet/stat inline when a kit atom exists.
+2. TOKENS ONLY. Colour, radius, shadow and type from src/index.css semantic
+   tokens. NEVER raw Tailwind text sizes (text-xs/sm/base/lg/xl) — use
+   text-caption/footnote/subhead/body/callout/headline/title/display/hero.
+   NEVER hardcode hex/rgb — use colour tokens.
+3. ICONS, NOT GLYPHS. Use <Icon> for all affordances. Never type ›, ‹ or ×.
+4. ONE SOURCE OF TRUTH. Change look via token or atom, never per-screen CSS.
+5. ENFORCEMENT. eslint.config.js BLOCKS raw text sizes and hex/rgb in src/ui.
+   Run `npm run lint` before shipping. Do NOT disable guardrails.
+6. ACCESSIBILITY FIRST. Focus outlines, ARIA roles, prefersReducedMotion(),
+   WCAG AA contrast, 44×44pt touch targets, labeled form inputs.
+
+Text scale: caption(12) / footnote(13) / subhead(15) / callout(16) /
+headline(18) / title(22) / display(30) / hero(48).
+WHERE THINGS LIVE: tokens = src/index.css (@theme); atoms = src/ui/kit/;
+live reference = /styleguide route.
+
+----------------------------------------------------------------
+1. WHAT WE'RE BUILDING
+----------------------------------------------------------------
+A personal nutrition + weight-management app for Marco's own use.
+NOT a calorie tracker. Core idea: GOAL MANAGEMENT — tracking exists only
+to answer "Am I on track to hit my goal?"
+Mental model: Goal → Weekly progress → Daily progress → Food/Activity inputs.
+
+----------------------------------------------------------------
+2. PLATFORM & STACK
+----------------------------------------------------------------
+React + Capacitor (web code + native iOS shell). NOT native Swift.
+Stack: Vite 6, React 19, TypeScript, Tailwind CSS v4, Dexie (IndexedDB),
+Vitest. Capacitor v8. appId: com.marco.nutritiongoal, webDir: dist.
+Install path: Xcode + free Apple ID ($0). Re-sign every ~7 days.
+
+----------------------------------------------------------------
+3. AGREED V1 SCOPE
+----------------------------------------------------------------
+- Goal types: lose_by_date and gain_by_date.
+- TODAY: frequent foods, Add-entry sheet, calories + protein, deficit,
+  swipeable day nav.
+- GOAL: weight trend vs. target line, 9 lifecycle states.
+- PANTRY: create/edit food items.
+- Manual meal entry, manual activity calories, weight logging.
+- BMR: single user-entered number in V1.
+- Account: weight history, profile, BMR, export (JSON).
+DEFER (V1.5+): BMR auto-calibration, HealthKit/Withings, History tab,
+per-piece measurement types.
+
+----------------------------------------------------------------
+4. NAVIGATION / IA
+----------------------------------------------------------------
+- Bottom tab bar: Today / Goal / Pantry / Account.
+- Center "+" FAB speed dial: Scan / Food / Activity / Weight.
+  Scan item only shown when VITE_FOOD_SCAN_API_URL is set (SCAN_ENABLED gate).
+- Add-entry = bottom sheet (never full-screen nav).
+- Goal Setup = full-screen flow. ?skip-type=true skips plan-type step.
+- Day nav on Today: chevrons + swipe. Future dates disabled.
+
+----------------------------------------------------------------
+4B. V1 DATA MODEL
+----------------------------------------------------------------
+Goal status: active / completed / abandoned.
+GoalScreen renders 9 states (all implemented r55):
+  (1) no-goal  (2) active-normal  (3) final-day·no-weight
+  (4) final-day·weight-in(not hit)  (5) final-day·goal-hit
+  (6) early-complete  (7) overdue  (8) completed  (9) abandoned/ended
+GoalOutcomeView: createPortal → document.body. Slide-up on mount.
+GoalSettingsSheet (⋯): Mark complete / Edit plan / End goal / Past goals.
+User model: weightCadence ('daily'|'weekly'), weeklyWeightDay.
+
+----------------------------------------------------------------
+5. METRICS / MATH
+----------------------------------------------------------------
+Total Burn = BMR + Active Calories.
+Daily Deficit = Total Burn − Calories Consumed.
+~7700 kcal per kg for goal pace math.
+
+----------------------------------------------------------------
+7. CURRENT STATUS (as of round 206, 2026-07-12)
+----------------------------------------------------------------
+All V1 features shipped and running on device. This is a snapshot only.
+Detailed round-by-round history lives in CHANGELOG.txt (rounds 1-206)
+and the 3 most recent rounds are kept in full in RECENT ROUNDS below.
+
+- PROJECT MOVED OUT OF iCLOUD SYNC; ROOT-CAUSED RECURRING BUILD
+  FAILURES (round 206): the project lived at ~/Documents/leve (an
+  iCloud "Desktop & Documents Folders" synced location). iCloud was
+  creating stray space-suffixed duplicate files during Android builds
+  -- confirmed the exact same config 2.xml that broke a build once
+  before in this project, plus a duplicate "build 2" folder -- causing
+  repeated "not a valid file-based resource name" Gradle failures no
+  matter how many times android/build was cleaned. Moved to ~/leve;
+  updated every doc's hardcoded ~/Documents/leve path (ANDROID.md,
+  TESTFLIGHT.md, HEALTHKIT.md). Should stop this class of failure for
+  good. See KNOWN GAPS / CHANGELOG for the note on what to check first
+  if it ever resurfaces anyway.
+- ANDROID versionCode/versionName BUMPED FOR TESTER RELEASES (round
+  205): android/app/build.gradle's versionCode/versionName had never
+  been bumped from their initial scaffold values (1 / "1.0") across any
+  Android release so far, including the round 204 shared-beta release
+  Marco just uploaded -- Firebase App Distribution showed it as
+  identical to the previous release his testers already had installed.
+  Same-versionCode installs can be silently refused by Android on some
+  devices. Bumped to versionCode 2 / versionName "1.1"; ANDROID.md's
+  build step now calls out bumping this before every future release,
+  same discipline as iOS's TestFlight build-number bump.
+- "ADD ANOTHER ITEM" COLLAPSE/EXPAND LOGIC FIXED (round 204): the
+  Day's-log basket picker (both FoodForm and LogEntryContent copies in
+  AddEntrySheet.tsx) now follows one rule -- collapsed by default, only
+  resumes expanded when backing out of an add-attempt reached through
+  it (Describe/Manual canceled, or Camera/Photo's native picker
+  canceled). Previously the shared overlayBack() handler reopened it
+  any time the basket wasn't empty, regardless of WHY an overlay
+  closed -- so editing an existing basket item, or "fix with AI"
+  re-correcting one, both unrelated to this picker, reopened it as a
+  side effect almost every time (basket is non-empty whenever there's
+  something to edit). Also fixed a related bug found while tracing
+  this: overlayBack() never cleared correctingIdx, so canceling a "fix
+  with AI" re-scan left it silently pointed at that basket index,
+  corrupting the next unrelated Describe-add. Not yet device-confirmed
+  by Marco. Pantry's own equivalent picker (PantryFoodItemDetail.tsx /
+  PantryMealDetail.tsx) was NOT touched -- it never resumes on cancel
+  either, left as-is pending Marco's call on bringing it in line too.
+- ANDROID SHARED-BETA STEP DOCUMENTED, NOT YET APPLIED (round 203): Marco
+  reported Android testers get prompted for their own Anthropic key,
+  when shared-beta mode (round 193) should auto-connect a temporary one,
+  same as iOS TestFlight testers already get. Not a code bug -- the
+  mechanism (src/lib/sharedBeta.ts, apiKey.ts, db.ts) is 100% platform-
+  agnostic, driven by a single build-time flag (VITE_SHARED_BETA in
+  .env.local). ANDROID.md simply never documented turning it on before
+  building for Android testers, unlike TESTFLIGHT.md's existing iOS
+  workflow. Added the same step to ANDROID.md (new section "6.5"). Marco
+  still needs to set the flag and rebuild/redistribute -- see KNOWN GAPS.
+- ANDROID EDGE-TO-EDGE + STATUS-BAR FADE FIX, FROM REAL TESTER FEEDBACK
+  (round 202): a friend of Marco's (Android developer) tested the app
+  and reported two things: (1) status/nav bars render fully black
+  instead of edge-to-edge, and (2) screen titles show fading even with
+  no scroll. Both traced back to round 196/199 leftovers. Fix 1:
+  targetSdkVersion reverted 34->36 (android/variables.gradle) --
+  round 196 lowered it as a first guess at the status-bar overlap bug,
+  which round 197-199 later proved was actually a safe-area wiring
+  issue, not a targetSdk one; leaving it at 34 meant the app never
+  opted into Android 15's edge-to-edge enforcement (SDK 35+ only),
+  so the OS fell back to legacy opaque black bars. Safe to revert now
+  that real safe-area handling (round 199) and the carousel rendering
+  fix (round 200) are both in place and confirmed on-device. Fix 2:
+  AppShell.tsx's status-bar fade gradient (round 185) was
+  safe-top+48px tall; every screen's own title sits at safe-top+16px
+  (the shared px-6 pt-4 header pattern -- Pantry, Diary, Account,
+  Goal all use it), which was still inside that taller gradient,
+  visibly tinting the title at rest. Shrunk to safe-top+8px, clearing
+  every title while keeping a small gradual fade at the safe-area
+  boundary itself. Not yet re-confirmed on Marco's friend's device
+  (code-verified + on Marco's own emulator only so far).
+- HEALTH CONNECT (ANDROID) ENABLED -- CORRECTING AN EARLIER MISTAKE
+  (round 201): round 194's "Apple Health sync has no Android
+  equivalent" known gap was WRONG -- introduced without actually
+  checking @capgo/capacitor-health's docs. The plugin fully supports
+  Health Connect (Android's Google-Fit replacement) via the exact same
+  unified API our sync code (src/data/healthkit.ts) already calls, with
+  zero platform branching needed there. Added healthServiceName()
+  (returns "Apple Health"/"Health Connect" per platform), used it to
+  fix hardcoded "Apple Health"/"iPhone" copy in HealthConnectBanner.tsx
+  and AccountScreen.tsx. Added public/privacypolicy.html -- Health
+  Connect requires apps show a privacy policy when requesting
+  permission (HealthKit has no equivalent requirement); the plugin's
+  native rationale screen loads this file automatically once it's
+  bundled (no extra config). See ANDROID.md.
+- ANDROID GAUGE-CARD FRAGMENT FIXED, DEVICE-CONFIRMED (round 200): the
+  fragment above WeekStrip was never a safe-area issue (rounds
+  197-199's diagnosis was wrong, though that work is still correct and
+  kept) -- Marco's own experiment (swipe to a different week/day makes
+  it vanish, swipe back reproduces it) pointed to the day-content
+  carousel itself. Real cause: paddingTop:24px + marginTop:-24px
+  cancellation trick + overflow:hidden + a transformed sliding child --
+  a cross-WebView-engine rendering inconsistency. Fixed by dropping the
+  negative-margin cancellation on Android only. Confirmed working
+  on-device.
+- ANDROID STATUS-BAR FIX, THE ACTUAL FIX (round 199): rounds 197-198
+  both guessed wrong about the mechanism. The real answer, found by
+  reading Capacitor's own Android bridge source
+  (node_modules/@capacitor/android/.../SystemBars.java): Capacitor
+  measures the real native inset on Android and injects it as a CSS
+  custom property named --safe-area-inset-top (var() syntax) -- a
+  different mechanism from the CSS environment variable
+  env(safe-area-inset-top), which Android's WebView always resolves to
+  a real, defined 0px. Our code only ever read env(), so Android's
+  real, precise, already-injected value sat unused the whole time.
+  Centralized the fix: index.css now defines root --safe-top/
+  --safe-bottom vars that read Capacitor's injected custom property
+  first, falling back to env() (what iOS/desktop already use) only if
+  unset. Every safe-area usage across the app (AppShell's fade +
+  tap-interceptor, GoalSetupScreen, SlideScreen, Toaster, AddEntrySheet
+  x3, Sheet.tsx x3, FloatingTabBar) now reads these two vars instead of
+  duplicating env() inline. Removed round 197/198's guessed
+  --safe-top-override 32px constant -- no longer needed, Android now
+  gets its own real measured value. Confirmed iOS is unaffected: its
+  equivalent native plugin (SystemBars.swift) never sets the custom
+  property, so iOS falls straight through to its native env() value,
+  unchanged.
+- ANDROID STATUS-BAR FIX, TAKE TWO -- ACTUALLY CORRECT THIS TIME (round
+  198): round 197's fix had zero visible effect on-device, even after
+  confirming a real rebuild. Cause: env(name, fallback)'s fallback only
+  applies when the browser doesn't support the named variable at all --
+  Android's WebView DOES support env(safe-area-inset-top) syntactically,
+  it just always resolves it to a real, defined 0px (no native
+  WindowInsets wiring). Nesting --safe-top-fallback inside env()'s own
+  fallback slot, like round 197 did, therefore never triggered. Fixed by
+  flipping the check order: .safe-top now reads
+  var(--safe-top-override, env(safe-area-inset-top, 0px)) -- var()'s own
+  fallback correctly activates whenever the custom property isn't set,
+  which main.tsx only does on native Android, so the override reliably
+  wins there while iOS/desktop are unaffected.
+- ANDROID FIRST SUCCESSFUL DEVICE RUN + FIXES (rounds 195-197): the
+  android/ project built and ran on a Pixel 9 Pro emulator for the
+  first time. minSdkVersion bumped 24->26 (capgo/capacitor-health's
+  manifest requires it). Splash screen + launcher icon regenerated from
+  leve's real brand mark (were Capacitor's default white-bg/blue-logo
+  placeholder, never customized when the platform was scaffolded).
+  Fixed a real cross-platform bug found on-device: Android's WebView
+  doesn't populate env(safe-area-inset-top) the way iOS's WKWebView
+  does, so the shared .safe-top utility class (used app-wide: AppShell,
+  GoalSetupScreen, OnboardingFlow, FirstOpenFork,
+  OnboardingDailyAllowance, GoalScreen, TopBar, SlideScreen) fell back
+  to 0px padding on Android, letting content render under the status
+  bar. main.tsx now sets a --safe-top-fallback CSS var (currently an
+  estimated 32px, not device-measured) on native Android only; iOS
+  keeps using its real WebView-reported inset, desktop/browser preview
+  untouched. targetSdkVersion also lowered 36->34 as an earlier,
+  possibly-now-redundant mitigation for the same symptom (Android 15's
+  edge-to-edge enforcement) -- left in place, harmless, not yet
+  reverted. See KNOWN GAPS for what's still unverified.
+- ANDROID PLATFORM ADDED FOR EXTERNAL TESTERS (round 194): android/
+  scaffolded via Capacitor alongside the existing ios/ project (same
+  shared src/ code, own separate on-device data store like any other
+  surface). Fixed two iOS-only hardcoded platform checks (camera.ts,
+  PhotoPicker.tsx) so camera/photo capture works on Android; added
+  npm run android/android:add/android:sync scripts. ANDROID.md
+  documents getting builds to Android testers via Firebase App
+  Distribution (free, TestFlight-equivalent, no Play Store listing/
+  review) and the later path to Google Play. iOS build/TestFlight
+  re-confirmed working, unaffected. Known gap: Apple Health sync
+  (@capgo/capacitor-health) is HealthKit-only, no Android equivalent
+  yet — Android testers log weight/activity manually for now. Marco
+  has not yet successfully opened/run the android/ project in Android
+  Studio (installed but hit a disk-space blocker) — that's the next
+  step, see ANDROID.md.
+- DIARY SIGN-DISPLAY + WEEKLY-STRIP BMR FIXES (round 193): Day's log now
+  always shows Food with no sign and Activity with "−", matching the
+  gauge card, across all three goal types (previously backwards for
+  lose_by_date/maintain). The weekly strip's succeed/fail dots now
+  compute BMR per day (bmrForDate) instead of one flat current-BMR
+  number, matching the gauge card's own math — fixes cases where a
+  historical weight change made the strip disagree with the gauge card
+  for the same day.
+- GAIN PACE TIERS RENAMED (round 193): Guided goal-setup's Gain "Pace"
+  options are now Relaxed/Steady/Ambitious (was Lean/Steady/Bulk),
+  matching Lose's vocabulary — both are the same mechanism (three tiers,
+  slow-to-fast), so both now read as pace rather than mixing in
+  body-composition-style language for Gain only.
+- WHEELPICKER HAPTICS (round 193): every real WheelPicker interaction
+  (weight/date/range pickers etc.) now fires hapticLight(), matching the
+  rest of the app's interactive elements.
+- SHARED-BETA MODE (round 193, new): an opt-in, env-gated mode
+  (VITE_SHARED_BETA in .env.local, OFF by default) for handing a build to
+  external testers without requiring their own Anthropic key — auto-
+  connects AI Food Scan on the Test profile only, using a temporary key
+  Marco controls. Marco's own day-to-day build is unaffected unless he
+  explicitly sets the flag right before archiving a build for testers.
+  See TESTFLIGHT.md's "Shared beta mode" section for the full workflow,
+  including how to end access for everyone at any time (delete the key
+  in the Claude Console — instant, permanent, no app update needed).
+- THREE GOAL TYPES NOW SHIPPED (round 190): maintain_weight joins
+  lose_by_date/gain_by_date end-to-end — GoalSetupScreen (Guided band
+  presets + Detailed custom range picker), GoalScreen/TodayScreen/
+  PastGoalsScreen all branch three ways, FirstOpenFork/GoalForkScreen
+  offer it as a path card. Gain and maintain share their band-gauge/chart
+  logic via a new usesKcalBand() helper. See RECENT ROUNDS for full detail.
+- KEYBOARD "DONE" BAR GAP ROOT-CAUSED (round 190, see KNOWN GAPS for
+  confirmation status): a Done bar rendered inside a Sheet's nested
+  overlay (OverlayLayer) was positioning against that overlay's own
+  transformed box instead of the true viewport — fixed by portaling the
+  bar straight to document.body. A first, wrong hypothesis (compensating
+  for env(safe-area-inset-bottom)) was tried, made things worse, and was
+  reverted before the real cause was found via on-device diagnostics.
+- GOAL-FORK NAVIGATION FIXED (round 190, device-confirmed): going back
+  from Goal-setup to the goal-type fork screen no longer shows a blank
+  flash before the destination appears, and no longer replays its
+  slide-up entrance animation on every return visit.
+- ACCOUNT SCREEN REDESIGNED (round 180): Profile+BMR merged into the same
+  gauge-card layered pattern as Diary/Today (white profile card floats on
+  a grey reveal; BMR lives in the grey area — label, icon, then value +
+  "kcal / day", 16pt), now at 24px radius (rounded-sheet). Whole card
+  opens Edit profile; "Edit" moved above the card as a 15pt accent-hover
+  text label (no background). Weight-units toggle moved out of the
+  Edit-profile sheet into its own live Tracking card (WeightUnitsCard);
+  Edit-profile's Weight field now reuses the same WeightLogSheet as
+  Today/Goal ("tap the field" — no separate button), confirmed to
+  upsert-by-date so it always reflects the most recent calendar entry.
+  Goal and Connections sections are hidden, not deleted
+  (SHOW_GOAL_SECTION / SHOW_CONNECTIONS_SECTION consts in
+  AccountScreen.tsx) — Goal duplicated the Goal tab, Connections
+  (Withings) isn't needed yet. Data (export JSON) moved under a new
+  Developer section, hidden by default and revealed by triple-tapping
+  the "Account" title; the reveal persists across reloads via new
+  src/lib/devReveal.ts (localStorage) and toggles off the same way.
+  Tracking/Settings cards (Weight units, Weigh-in frequency, Diary
+  macros, Theme/Haptics) restyled to match GoalScreen's own outline-card
+  pattern: rounded-card (16px), white fill, inset border-field hairline,
+  no drop shadow; titles bold/16pt/text-content. Selected weigh-in day
+  pill now uses the shared segmented-active look (white + shadow +
+  accent-hover text) instead of a solid fill; its footer sentence spells
+  out full day names ("Mondays") instead of abbreviated + "s".
+- ACCOUNT RESTRUCTURED (round 191): Tracking and Settings are their own
+  full-screen sub-views (slide in from the right, back chevron, plus a
+  swipe-right gesture to go back), reached from a small "Options" section
+  (two-row menu) below Profile on the main Account view instead of being
+  shown inline. Both sub-views share Account's own muted page background
+  instead of a plain white sheet. SlideScreen/SlideHeader were extracted
+  from PastGoalsScreen.tsx into src/ui/kit/SlideScreen.tsx (two new
+  opt-in props, onBack and muted, both additive) so Account and Past
+  goals share one implementation. Developer stays nested inside the
+  Settings sub-view (still gated by the same triple-tap-title reveal),
+  not its own menu row.
+- APPLE HEALTH INTEGRATION SHIPPED (round 191): real, on-device sync of
+  weight and activity/active-energy via @capgo/capacitor-health, no
+  backend. Connect/disconnect lives in the Settings sub-view; sync runs
+  on app open/foreground plus on-demand, is clamped to never backfill
+  before the moment Connect was tapped, and never overwrites a manually
+  logged entry for the same day. A synced Activity entry can be hidden
+  (excluded from totals, stays visible muted in the day's log) or
+  refreshed on demand. See HEALTHKIT.md for the one manual Xcode step
+  (HealthKit capability) required after a fresh clone.
+- BRING-YOUR-OWN CLAUDE API KEY + AI CONNECTION GATE (round 191): Account
+  > Settings > AI Food Scan lets a user store their own Anthropic API key
+  (iOS Keychain via @aparajita/capacitor-secure-storage); when set,
+  lib/foodScan.ts calls api.anthropic.com directly instead of the shared
+  Vercel proxy. Every AI-feature trigger (Camera/Photo/Describe/
+  Nutri-scan/Fix, across Day's log and all Pantry surfaces) is gated
+  upfront via useAiGate: no key cached shows a short "Connect AI to use
+  this" sheet before the feature ever opens, instead of waiting for a
+  scan to fail. Reactive error handling (FoodScanError) is kept as a
+  second layer for genuine failures (rejected key, network/proxy issues)
+  with a tappable action back into the key sheet.
+- TESTFLIGHT DISTRIBUTION SET UP (round 191): app icon alpha channel and
+  a bundle-ID mismatch fixed; TESTFLIGHT.md documents the full
+  archive-and-upload runbook. The existing cable-run `npm run ios` /
+  Xcode ▶ Run workflow is unchanged and stays the fast day-to-day path;
+  TestFlight is a separate, occasional channel.
+- FIRST TESTFLIGHT UPLOAD SHIPPED (round 192): the first real upload
+  attempt was rejected by Apple's automated Info.plist scan for a
+  missing NSHealthUpdateUsageDescription purpose string (required
+  because the Health plugin links write-capable HealthKit APIs even
+  though leve's own code never writes to Health); added the string and
+  fixed a stale "nutri" display name left in the Xcode target's build
+  settings from before the app was renamed to leve. Second upload
+  attempt cleared processing successfully.
+- EXPORT ALL DATA (JSON) FIXED ON iOS (round 192): the Developer-section
+  export used a browser-style file-download trigger that silently did
+  nothing inside the app's iOS webview; rewritten to use
+  @capacitor/filesystem + @capacitor/share so it opens the native share
+  sheet on device, confirmed working.
+- SegmentedControl replaced with FilterPills for Account's sex/weight
+  units/weigh-in frequency toggles (round 191), matching the pattern
+  Goal Setup already used.
+- Diary/Today gauge-card + macro-bars layered pattern (rounds 162-165) is
+  now also the shared reference pattern for the 3 Basket Meal views
+  (PantryMealDetail, FoodForm, LogEntryContent): a white meal-summary
+  card floats on a grey Food-items panel below it.
+- Grey Food-items panel fill CONFIRMED working on-device (round 170's
+  bottomGapPx cap on top of round 168's root-cause fix) — no further
+  reports since. The app-freeze bug on X -> discard-confirm -> "Keep
+  editing" is also confirmed fixed on-device (round 171,
+  closeImmediately race condition in Sheet.tsx).
+- PANTRY now ships with 150 default ("origin:'app'") Food items, seeded
+  once per device on first load after this update (round 179,
+  src/data/defaultPantry.ts + defaultPantrySeed.ts) — common staples
+  across proteins/grains/fruits/veg/dairy/fats, per-100g macros, no
+  images. Their measurement type + macro fields are locked/greyed-out in
+  FoodItemForm (name/photo stay editable). PantryScreen and PantryPicker
+  both now filter via 3 independent toggle pills — Food items / Meals /
+  My own (round 177-178) — replacing the old single-select All/Food
+  items/Meals radio; "My own" restricts to origin:'user' and is disabled
+  whenever the view is Meals-only (no app-provided Meals exist).
+- Default placeholder image: src/assets/food-placeholder.png (569KB,
+  round 168, unchanged — a round 174 attempt to recolor it was reverted
+  round 175). Image corner radius is 32px everywhere a photo or
+  placeholder renders (round 168), matching radius-main. Real photos
+  (not the placeholder) now use a dedicated, darker --shadow-photo token
+  (round 176) instead of the shared shadow-card-lg.
+- Carb targets for Balanced/Performance macro styles scale with body
+  weight + today's actual activity (activityCarbTargetG, round 169),
+  replacing the old "whatever's left after protein/fat" residual formula.
+  Baseline g/kg and activity-share constants are initial estimates —
+  see KNOWN GAPS.
+- .env.local: gitignored, must be recreated if folder is deleted.
+  VITE_FOOD_SCAN_API_URL=https://food-scan-api-delta.vercel.app
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped.
+
+----------------------------------------------------------------
+8. ARCHITECTURE NOTES
+----------------------------------------------------------------
+Layer model (strict dependency direction):
+  src/domain/   Pure TS — types.ts, calc.ts, goal.ts, bmr.ts.
+  src/data/     Dexie + memory repos. repositories.ts = interfaces.
+  src/state/    repos.ts (swap point) + useLive() + useDay().
+  src/ui/       AppShell + screens + components + kit/.
+  src/index.css Design token layer (Tailwind v4 @theme).
+
+KEY PATTERNS:
+- createPortal: GoalOutcomeView renders into document.body to escape
+  AppShell overflow-hidden / z-index on WKWebView.
+- slide-up/down: .slide-up-in / .slide-down-out in index.css.
+  Exit: setExiting(true) → setTimeout(cb, 320) → navigate.
+- Sheet-on-Sheet: destructive confirms render a second Sheet alongside
+  the parent in a Fragment (both conditionally mounted).
+- SCAN_ENABLED = !!(import.meta.env.VITE_FOOD_SCAN_API_URL) — used in
+  AddEntrySheet.tsx header icon and FloatingTabBar.tsx FAB action list.
+  Unaffected by bring-your-own-key (below); gates whether scan exists
+  at all, not which backend handles a request.
+- Bring-your-own Claude API key (Account > Settings > AI Food Scan,
+  ApiKeySheet.tsx): user pastes their own Anthropic key, stored via
+  @aparajita/capacitor-secure-storage (iOS Keychain / Android Keystore,
+  lib/apiKey.ts). When set, lib/foodScan.ts's scanFood/describeFood call
+  api.anthropic.com directly from the device (model: claude-sonnet-5,
+  forced tool_use for structured output) instead of the shared Vercel
+  proxy. This bypasses food-scan-api entirely, so no changes needed on
+  that separate Vercel project.
+- useAiGate (src/ui/components/useAiGate.tsx): every AI-feature trigger
+  (Camera/Photo/Describe/Nutri-scan, incl. "Fix"/re-describe) is gated on
+  tap. No personal key cached shows a short "Connect AI to use this" sheet
+  (View more -> ApiKeySheet, or Cancel) instead of proceeding, checked
+  BEFORE opening the camera/picker/describe overlay at all. This means the
+  shared Vercel proxy fallback in lib/foodScan.ts is effectively
+  unreachable from normal UI flow now (every entry point requires a key
+  first), kept as defense-in-depth, not deleted. lib/apiKey.ts's in-memory
+  key cache is warmed once on boot (AppShell) so the gate's tap-time check
+  is synchronous.
+
+ENV NOTE: Cowork Linux sandbox can't run rollup native binary. After
+changes, on the Mac: `npm install` → `npm test` → `npm run build` →
+`npm run ios:sync`.
+
+----------------------------------------------------------------
+KNOWN GAPS
+----------------------------------------------------------------
+HIGH:
+- (none currently open — both former HIGH items were resolved in round
+  181; see DONE (r181) below.)
+
+MED:
+- "ADD ANOTHER ITEM" FIX AWAITING DEVICE CONFIRMATION; PANTRY NOT YET
+  ALIGNED (round 204, new): the collapse/expand fix in AddEntrySheet.tsx
+  hasn't been tested on-device yet. Also, Pantry's own "Create a meal" /
+  "Add another item" sections (PantryFoodItemDetail.tsx,
+  PantryMealDetail.tsx) still never resume on cancel -- Marco was asked
+  whether to bring those in line with the same rule, not yet answered.
+- ANDROID SHARED-BETA MODE NOT YET TURNED ON FOR TESTER BUILDS (round
+  203, new): ANDROID.md now documents the step (set VITE_SHARED_BETA=true
+  + a temporary key in .env.local before npm run android:sync), but
+  Marco hasn't yet rebuilt/re-uploaded an Android APK with it on --
+  current Firebase App Distribution testers are still on a flag-off
+  build and will still see the "enter your own key" prompt until a new
+  build is distributed.
+- ANDROID EDGE-TO-EDGE FIX AWAITING EXTERNAL-TESTER RE-CONFIRMATION
+  (round 202, new): targetSdkVersion reverted 34->36 and AppShell's
+  status-bar fade shrunk, fixing both issues Marco's Android-developer
+  friend reported (black bars, title fade-overlap) per code review and
+  on Marco's own emulator -- not yet re-tested on that friend's actual
+  device.
+- NO AUTOMATED TEST COVERAGE FOR HEALTHKIT/BYOK/GATE/SHARED-BETA LOGIC
+  (round 191, extended round 193): the HealthKit sync (dedup/clamp/
+  hide-in-place), the direct-to-Anthropic BYOK call path, the useAiGate
+  upfront check, the weekly strip's per-day BMR computation, and the new
+  shared-beta profile-default/key-fallback logic (src/data/db.ts,
+  src/lib/apiKey.ts, src/lib/sharedBeta.ts) were all verified manually/
+  by tracing, not via vitest. Worth adding unit coverage for the pure
+  logic pieces (queryAggregated bucketing, connectedAt clamp,
+  FoodScanError classification, bmrForDate-per-day in the week strip,
+  withSharedBetaFallback) if this area sees more churn.
+- SHARED-BETA MODE RELIES ON MANUAL DISCIPLINE (round 193, new): turning
+  VITE_SHARED_BETA on/off in .env.local around a TestFlight archive is a
+  manual step (see TESTFLIGHT.md) — if Marco ever forgets to turn it off
+  before a regular npm run ios:sync, his own phone would default into
+  the empty Test account on next launch (his real data would be
+  untouched, just not visible until he switches back). The Developer
+  menu's warning banner is the safety net today; worth a build-script
+  check (e.g. warn/fail npm run ios if the flag is on) if this ever
+  causes a real scare.
+- DONE-BAR PORTAL FIX AWAITING FINAL ON-DEVICE CONFIRMATION (round 190,
+  new): the Done-bar gap (open since round 181, "still a bit high" on
+  fields like Edit food item's Name) was root-caused this round to
+  position:fixed elements inside a transformed OverlayLayer ancestor not
+  actually anchoring to the true viewport — fixed via createPortal to
+  document.body. Strongly evidenced via an on-device A/B (Dev > Keyboard
+  playground row 5, plain top-level field: pixel-perfect; the same hook
+  nested in an overlay: gap present), but the ORIGINAL repro case (Name
+  field in Edit food item) hasn't yet been re-tested against this exact
+  fix. A first, unrelated hypothesis this round (compensating for
+  env(safe-area-inset-bottom)) made the gap dramatically worse and was
+  reverted — see ROUND 190 below before assuming any keyboard-inset
+  related fix is safe to retry blindly.
+- CARB TARGET MODEL TUNING (round 169; capped round 181): activityCarbTargetG's
+  constants (2.2g/kg Balanced, 2.4g/kg Performance baseline; 55%/75%
+  share of active kcal) are initial estimates, not yet validated against
+  Marco's real day-to-day numbers — likely needs tuning after a few days
+  of use (see CARB_MODEL in domain/goal.ts to adjust). Round 181 added a
+  4.5g/kg hard cap for Balanced only (Performance stays uncapped) to stop
+  the ~400g/day outlier on high-activity days — the cap value itself is
+  also unvalidated.
+- RETROACTIVE MACRO-CORRECTION RISK (round 179, new): nutrition is always
+  computed LIVE from a Food item's current fields (nutritionFor in
+  calc.ts) — never snapshotted at the moment something's logged. This
+  predates round 179 but matters much more now: any future correction to
+  one of the 150 seeded default-pantry values would silently change the
+  numbers on every past diary entry that referenced it, for everyone who
+  logged it. Accepted trade-off for now (see round 179's CHANGELOG entry)
+  — revisit if a real correction is ever needed post-launch.
+- DEFAULT-PANTRY SEED IS V1-ONLY (round 179, new; per-profile bug fixed
+  round 190): defaultPantrySeed.ts seeds once per device via a
+  localStorage flag, now scoped per real/test profile
+  (defaultPantrySeedFlagKey) after round 190 fixed real-account seeding
+  permanently blocking test-account seeding (and vice versa). The
+  original gap still stands though: adding new default foods or
+  correcting existing ones later needs its own new versioned flag/
+  migration step (same pattern as mealsMigration.ts) — nothing currently
+  re-syncs an already-seeded profile.
+- PLACEHOLDER IMAGE SIZE (round 168): food-placeholder.png is 569KB
+  (down from round 166's 812KB) but still sizeable for a UI placeholder
+  rendered at 256×256 — worth compressing further if bundle size becomes
+  a concern; not blocking.
+- NO CONFIRM on destructive deletes of food entries, pantry items, weight
+  entries. (Goal actions confirm via Sheet; entry deletes are immediate.)
+- .env.local is gitignored and must be recreated manually if the project
+  folder is deleted. Contains VITE_FOOD_SCAN_API_URL (Vercel scan API URL).
+- PROFILE CARD NESTED INTERACTIVE CONTROL (round 180, new): the Profile
+  card is a div[role=button] wrapping the whole card to open Edit profile;
+  the BMR info icon inside is a real nested <button> that stopPropagation
+  s to open its own "About BMR" sheet instead. Works fine and is
+  keyboard-activatable, but nested interactive controls are a minor a11y
+  smell — revisit if VoiceOver testing surfaces an issue.
+
+LOW:
+- iCLOUD DUPLICATE-FILE BUILD FAILURES SHOULD BE GONE, NOT PROVEN
+  IMPOSSIBLE (round 206, new): moving the project from ~/Documents/leve
+  to ~/leve should stop the recurring "not a valid file-based resource
+  name" Gradle failures (config 2.xml, a duplicate "build 2" folder --
+  both iCloud Drive sync artifacts), but this hasn't been proven over a
+  long stretch of builds yet. If it ever comes back: check for a stray
+  space-suffixed duplicate file first, delete it, clean android/build +
+  android/app/build + android/.gradle, rebuild -- don't assume it's a
+  real source problem.
+- OUTLINE-CARD STYLE DUPLICATED (round 180, new): the rounded-card + inset
+  border-field hairline, no-shadow card style Marco asked for on Account
+  (Weight units/Weigh-in frequency/Diary macros/Theme, via the local
+  OutlineCard helper in AccountScreen.tsx) is hand-rolled independently of
+  GoalScreen.tsx's goal-overview container, which uses the same inset-
+  border technique on its own. Worth extracting into a shared kit atom if
+  a 3rd screen wants it — left as-is for now since only 2 screens use it.
+- DEFAULT-PANTRY NAME-COLLISION CHECK IS EXACT-MATCH (round 179, new):
+  defaultPantrySeed.ts skips a default only when its name exactly matches
+  (case-insensitive, trimmed) an existing item. Near-duplicate names
+  (e.g. a user's own "Chicken Breast" vs the seeded "Chicken breast,
+  cooked") both appear as separate rows rather than merging — Marco
+  flagged this explicitly; decided to leave as-is rather than add fuzzy
+  matching (real false-positive risk, e.g. "chicken thigh" vs "chicken
+  breast").
+- DEFAULT-PANTRY ITEMS HAVE NO IMAGES (round 179, deliberate v1 scope):
+  discussed sourcing real photos vs. a matching icon/illustration set for
+  the 150 defaults; decided to skip images entirely for v1. Revisit if
+  wanted later — see the round 179 discussion in this session's history
+  for the icon-set vs. photography trade-offs considered.
+- PANTRY FILTER PILLS DUPLICATED, NOT SHARED (round 177-178): the 3-pill
+  Food items/Meals/My own toggle row is bespoke, separately implemented
+  in both PantryScreen.tsx and PantryPicker.tsx (deliberately, so
+  FilterPills' other single-select call sites aren't affected) — a future
+  change to this behavior needs to be applied by hand in both places.
+- GoalOutcomeView: no haptic on appearance.
+- App.tsx still has /past-goals and /past-goals/:id stub routes (now unused;
+  PastGoalsPortal is portal-based). Safe to remove eventually.
+- ACTIVITY TEACHING MOMENT (§9 first-open spec): deferred.
+- ProfileSetupSheet height select always shows cm. Low priority.
+- Estimated BMR (weight-only) assumes pop-avg 170 cm / 35 yr / neutral sex.
+- STATUS-BAR TAP DEAD-ZONE (round 181, new, accepted): tapping exactly on
+  the clock/time in the iOS status bar doesn't trigger the app's
+  tap-to-scroll-to-top action — only taps slightly below it do. Tried an
+  onTouchStart-based experiment (AppShell.tsx); Marco reported it "didn't
+  really work" but it was left in place as harmless. Likely a WKWebView/
+  native status-bar hit-testing limitation, not chased further.
+- DONE_BAR_HEIGHT IS AN ESTIMATE, NOT DEVICE-MEASURED (round 181, new):
+  the 40px constant (src/ui/kit/useKeyboardDoneBar.tsx) is derived from
+  CSS padding/line-height math (16px py-2 + ~22.5px line-height for 15px
+  text), not a pixel-measured on-device value. If the Done bar's type
+  scale or padding ever changes, this constant needs updating in
+  lockstep, or the keyboard-clearance math (Sheet.tsx, OverlayLayer,
+  GoalSetupScreen.tsx) will drift.
+- moreHoriz ICON NOW UNUSED (round 181, new, cleanup): Icon.tsx still
+  exports a moreHoriz icon; nothing references it anymore now that the
+  Goal-options button is a text label, not an icon. Safe to remove.
+
+DONE (r201):
+- ✓ HEALTH CONNECT (ANDROID) ENABLED (round 201): corrected round 194's
+  wrong "HealthKit-only" claim -- @capgo/capacitor-health already
+  supports Health Connect via its unified API, no sync-logic changes
+  needed. Added healthServiceName() platform-aware label, fixed
+  hardcoded "Apple Health"/"iPhone" copy, added
+  public/privacypolicy.html (Health Connect's permission-rationale
+  requirement).
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped (unchanged).
+
+DONE (r200):
+- ✓ ANDROID GAUGE-CARD FRAGMENT ABOVE WEEKSTRIP FIXED, DEVICE-CONFIRMED
+  (round 200): was NOT a safe-area/padding issue (rounds 197-199 were
+  the wrong diagnosis, though that safe-area work is still correct and
+  kept). Real cause: the day-content carousel's paddingTop:24px +
+  marginTop:-24px cancellation trick (shadow room without
+  overflow:hidden clipping it), combined with overflow:hidden and a
+  transformed sliding child, is a cross-WebView-engine rendering
+  inconsistency. Fixed by dropping the negative-margin cancellation on
+  Android only (TodayScreen.tsx). Confirmed working on-device (Pixel 9
+  Pro emulator) — no further reports.
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped (unchanged).
+
+DONE (r194):
+- ✓ ANDROID PLATFORM SCAFFOLDED (round 194): npx cap add android,
+  android/ committed alongside ios/; npm run android/android:add/
+  android:sync scripts added mirroring ios:*.
+- ✓ iOS-ONLY CAMERA/PHOTO HARDCODES FIXED (round 194): camera.ts's
+  isNativeIOS() and PhotoPicker.tsx's inline getPlatform() === 'ios'
+  check both replaced with the generic isNativePlatform() check
+  (renamed isNativeIOS -> isNativeApp), so camera/photo capture works
+  on Android. See KNOWN GAPS (MED) — actual on-device Android
+  verification still pending, not yet device/emulator-tested.
+- ✓ ANDROID.md RUNBOOK WRITTEN (round 194): Firebase App Distribution
+  setup for Android testers (TestFlight-equivalent) through to the
+  later Google Play path.
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped (unchanged).
+
+DONE (r193):
+- ✓ DAY'S LOG SIGN DISPLAY FIXED (round 193): Food/Activity signs in the
+  Day's log list now always match the gauge card, across all goal types.
+- ✓ WEEKLY STRIP PER-DAY BMR FIX (round 193): the week strip now computes
+  BMR per day (bmrForDate) instead of one flat current-BMR number,
+  matching the gauge card's own math.
+- ✓ GAIN PACE TIERS RENAMED (round 193): Lean/Steady/Bulk -> Relaxed/
+  Steady/Ambitious, matching Lose's vocabulary.
+- ✓ WHEELPICKER HAPTICS (round 193): all real WheelPicker interactions
+  now fire hapticLight().
+- ✓ SHARED-BETA MODE SHIPPED (round 193): opt-in, env-gated mode for
+  handing a build to external testers without their own Anthropic key.
+  See TESTFLIGHT.md.
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped (unchanged).
+
+DONE (r191):
+- ✓ APPLE HEALTH INTEGRATION (round 191): weight + activity sync shipped
+  end-to-end, real on-device data via @capgo/capacitor-health. See
+  CURRENT STATUS and ROUND 191 below for full detail.
+- ✓ BRING-YOUR-OWN CLAUDE API KEY (round 191): personal Anthropic key,
+  stored in iOS Keychain, routes AI food scan/describe directly to
+  Anthropic instead of the shared proxy.
+- ✓ AI CONNECTION GATE (round 191): every AI-feature trigger now checks
+  for a key upfront instead of waiting for a scan to fail; also fixed
+  the bug where removing a key still silently worked via the shared-
+  proxy fallback.
+- ✓ TESTFLIGHT DISTRIBUTION (round 191): app icon + bundle-ID fixes,
+  TESTFLIGHT.md runbook added.
+- ✓ ACCOUNT OPTIONS MENU (round 191): Tracking/Settings moved into
+  full-screen sub-views under an Options menu, with swipe-back and a
+  shared muted background.
+- ✓ MAINTAIN-GOAL BADGE/TOTAL-DAYS BUGS FIXED (round 191): Diary badge
+  and Past Goals' "Total days" now branch on isMaintainGoal() instead of
+  assuming lose/gain fields exist.
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped.
+
+DONE (r192):
+- ✓ FIRST TESTFLIGHT UPLOAD SHIPPED (round 192): fixed a missing
+  NSHealthUpdateUsageDescription purpose string (Apple's automated
+  Info.plist scan requires it because the Health plugin links write-
+  capable HealthKit APIs, even though leve's own code never writes) and
+  a stale "nutri" display name left in the Xcode target's build
+  settings. Second upload attempt processed successfully.
+- ✓ EXPORT ALL DATA (JSON) FIXED ON iOS (round 192): replaced a
+  browser-only download trigger (silent no-op inside the app's webview)
+  with @capacitor/filesystem + @capacitor/share, native iOS share
+  sheet, confirmed working on device.
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped.
+
+DONE (r190):
+- ✓ MAINTAIN-WEIGHT GOAL TYPE (round 190): shipped end-to-end across
+  domain/goal.ts, GoalSetupScreen, GoalScreen, TodayScreen,
+  PastGoalsScreen, AccountScreen, FirstOpenFork.tsx. See CURRENT STATUS
+  and ROUND 190 below for full detail.
+- ✓ GOAL-FORK NAVIGATION FIXED (round 190, device-confirmed): white-
+  flash-then-pop-in on Goal-setup's exit, and the fork screen's
+  slide-up entrance incorrectly replaying on every Back navigation, both
+  fixed. See ROUND 190 below.
+- ✓ SCROLLBAR CHROME HIDDEN APP-WIDE (round 190, device-confirmed):
+  visible WKWebView scrollbar was poking through the keyboard's rounded
+  corners; hidden globally via CSS.
+- ✓ SINGLE-WHEEL WEIGHT PICKERS EVERYWHERE (round 190): the "picker
+  playground picker 3" single-wheel style, previously Maintain-only, now
+  also used for Lose-weight/Build-muscle's Start/Target weight fields.
+- ✓ KEYBOARD DONE-BAR PORTAL FIX (round 190): see MED gap above for
+  confirmation status — implemented and strongly evidenced, not yet
+  re-confirmed against the original repro case.
+- ✓ PANTRY SEED/MEALS MIGRATION PER-PROFILE (round 190): fixed real-
+  account seeding permanently blocking test-account seeding; see MED
+  gap above (DEFAULT-PANTRY SEED IS V1-ONLY) for the remaining, separate
+  gap this doesn't address.
+- tsc: clean. lint: clean. vitest: 57 passed (6 new), 8 skipped.
+
+DONE (r181):
+- ✓ KEYBOARD DONE BAR UNIFIED (round 181): useNumericDoneBar renamed to
+  useKeyboardDoneBar and moved into LabeledInput, so every text field (not
+  just numeric ones) gets the same "Done" dismiss accessory bar. Fixed an
+  early regression where a forced 44px height made the bar look bigger
+  than before — reverted to natural py-2 sizing (~40px, see KNOWN GAPS).
+- ✓ BALANCED CARB TARGET CAP (round 181): activityCarbTargetG now applies
+  a 4.5g/kg hard cap for the Balanced macro style only (Performance stays
+  uncapped), fixing the ~400g/day outlier reported on high-activity days.
+  See KNOWN GAPS (MED) — cap value itself still unvalidated.
+- ✓ GOAL-OPTIONS AFFORDANCE (round 181): the "⋯" options icon in
+  GoalScreen was first swapped for a custom Marco-supplied gear icon,
+  then replaced again with a plain "Options" text label per follow-up
+  feedback; the gear icon and its Icon.tsx entries were fully removed
+  (moreHoriz remains defined but now unused — see KNOWN GAPS).
+- ✓ 44×44PT CLEAR-BUTTON HIT AREAS (round 181): audited and fixed all
+  three clear (X) button implementations (LabeledInput, Field,
+  PantryScreen search bar) to meet the app's own touch-target rule —
+  absolutely-positioned buttons sized directly, in-flow buttons via a
+  padding + negative-margin trick that doesn't grow layout.
+- ✓ GUIDED/DETAILED GOAL-SETUP RELABEL + MERGED INFO CARD (round 181):
+  Simple/Custom segmented control renamed Guided/Detailed; added a
+  mode-specific explanation card visually merged behind the segmented
+  control (reviving the round-65 pattern). Fixed a follow-up bug where
+  the sticky header's opaque background hid the card's top border — by
+  moving the segmented control out of stickyHeader into normal scrolling
+  flow (this also resolves the old "SHEET stickyHeader SLOT" HIGH gap,
+  since that slot is no longer used for this control).
+- ✓ TOP STATUS-BAR FADE GRADIENT (round 181): added a white gradient over
+  the iOS notch/status-bar area app-wide (AppShell.tsx), mirroring the
+  existing bottom-nav fade; content still scrolls through it unaffected,
+  matching the pattern Marco approved. See KNOWN GAPS for the residual
+  tap-to-scroll dead zone directly on the clock.
+- ✓ KEYBOARD-COVERS-CONTENT BUG FIXED (round 181): OverlayLayer (used by
+  "Edit food item" and other overlay sheets) was missing scroll-into-view
+  logic entirely; added it (mirroring the main Sheet's pattern) and
+  corrected the keyboard-clearance math app-wide to account for the Done
+  bar's own height (DONE_BAR_HEIGHT) sitting on top of the keyboard.
+- ✓ SHEET HEADER SCROLL-SHADOW BUG FIXED (round 181, resolves the old
+  HIGH gap from round 152/153): root-caused via on-device debug data as a
+  CSS stacking-order issue — a shadow cast by a normal-flow header can be
+  silently painted over by a later sibling's own background unless the
+  header has its own stacking context. Fixed with `relative z-10` on both
+  the main Sheet's header and OverlayLayer's nav bar. Also fixed a related
+  bug where OverlayLayer's persistent `scrolled` state leaked between
+  different overlay screens, showing a stale shadow on a freshly-opened
+  overlay before any scrolling.
+- ✓ OVERLAY SHADOW BLEEDING ONTO GRAB HANDLE FIXED (round 181): the same
+  shadow's 8px blur radius bleeds ~8px above its own box's top edge — in
+  the main Sheet the grab handle sits inside that same shadow-casting box
+  so the bleed lands above the panel's visible content and gets clipped;
+  in OverlayLayer the grab handle was a separate, earlier sibling, so the
+  bleed was visible squarely above the nav row once scrolled. Fixed by
+  merging the grab handle and nav row into one shadow-casting box in
+  OverlayLayer, matching the main Sheet's structure.
+- ✓ GOAL FORK ENTRY ICON/TRANSITION FIXED (round 181): GoalScreen's
+  "Set a goal" button now passes the same `from=today` param TodayScreen's
+  two entry points already use, so GoalForkScreen ("What's your goal?")
+  correctly shows an X (not a back arrow) and slides up from the bottom
+  (not a plain cut) — GoalForkScreen is now device-reviewed and confirmed
+  working (moved from LOW, "built but not device-reviewed"). An earlier
+  attempt at this fix incorrectly targeted GoalSetupScreen's details step
+  instead and was fully reverted before the correct fix landed.
+- tsc: clean. lint: clean. vitest: 51 passed, 8 skipped (unchanged).
+
+DONE (r180):
+- ✓ ACCOUNT IA GROUPING PASS (round 180): resolved the long-standing
+  "layout still growing" gap — Profile+BMR merged into one gauge-card
+  layered component, Goal/Connections hidden, Data moved under a
+  triple-tap Developer section, weight-units + weight-logging surfaced
+  directly in Tracking. See CURRENT STATUS and CHANGELOG round 180 for
+  full detail.
+
+DONE (r170-179):
+- ✓ GREY-FILL FULLY CONFIRMED: round 170's bottomGapPx cap on
+  useFillToBottom (36px + 24px panel padding = ~60px max gap from true
+  bottom) confirmed working on-device across all 3 grey-panel views, no
+  further reports.
+- ✓ 5 PANTRY BUGS (round 170): consistent 24px spacing; hide "Add
+  another item" helper text + Save CTA in PantryMealDetail when nothing
+  changed; X cancels (not saves) an in-progress name edit; removed
+  redundant "Close" button in PantryFoodItemDetail; fixed naming-
+  uniqueness + eager-save bug converting a Food item into a Meal via
+  "add from pantry."
+- ✓ SESSION-CHANGES REVERT-ON-X (round 170): X on an already-saved
+  Meal now reverts ALL session changes (item add/remove, ingredient macro
+  edits), not just the name field — only Save persists. Deliberately
+  does not revert a measurementType/referenceAmount change (already
+  triggered a one-way unit conversion elsewhere that reverting would
+  leave silently wrong).
+- ✓ APP-FREEZE BUG FIXED (round 171): X → discard-confirm →
+  "Keep editing" no longer wedges the app. Root cause: Sheet.tsx's
+  close() didn't respect closeImmediately for scrim-tap/swipe-dismiss,
+  only the X button did; fixed + confirmed on-device via temporary debug
+  logging.
+- ✓ ADDANOTHERSECTION AUTO-SCROLL (round 172-173): expanding "+ Add a
+  new food item" smoothly scrolls itself into view, with 16px of
+  breathing room below.
+- ✓ 12PX PHOTO TOP-SPACING: added (round 172), caused a shadow
+  artifact on Meal-view photos, chased through 2 more rounds (173-174),
+  then fully reverted (round 175) rather than keep patching around it —
+  net no change from round 168's photo spacing.
+- ✓ DARKER PHOTO SHADOW (round 176): new dedicated --shadow-photo
+  token for real food/meal photos only, ~1.7x shadow-card-lg's opacity;
+  shadow-card-lg itself untouched for its other (unrelated) card uses.
+- ✓ 3-PILL PANTRY FILTER (round 177-178): Food items / Meals / My own
+  independent toggle pills, replacing the old single-select All/Food
+  items/Meals radio, in both PantryScreen and PantryPicker. New
+  origin?: 'app' | 'user' field on FoodItem.
+- ✓ 150 DEFAULT PANTRY FOODS SEEDED + MACROS LOCKED (round 179): see
+  CURRENT STATUS above and CHANGELOG round 179 for full detail.
+
+DONE (r168-169):
+- ✓ MEAL-CARD LAYERED HIERARCHY: white meal-summary card + grey Food-items
+  panel structure finalized across all 3 Basket Meal views (rounds 162-166);
+  grey-fill root cause found and fixed round 168 (see HIGH — pending final
+  on-device confirmation, not the design itself).
+- ✓ DEFAULT MEAL/FOOD-ITEM IMAGE: real placeholder wired in round 166,
+  swapped for Marco's smaller/preferred image round 168
+  (src/assets/food-placeholder.png, 569KB); image radius bumped 20px→32px.
+- ✓ AddAnotherSection border darkened (round 167: field→strong) and corner
+  radius split 16px collapsed / 24px expanded (round 168).
+- ✓ FoodForm's FAB-empty state (0 items) shows no image (round 167).
+- ✓ FoodItemForm's "Add photo" CTA redesigned to match the real-photo box
+  (round 167).
+- ✓ Day's-log section bottom padding 12px→8px (round 168).
+- ✓ Carb target model: replaced the leftover-calories residual formula
+  with an activity-scaled body-weight-baseline model (round 169).
+
+DONE (r122):
+- ✓ FoodItemForm.tsx: unified shared form for all 4 food-item surfaces.
+- ✓ PantryScreen: thin wrapper around FoodItemFormContent; delete icon updated.
+- ✓ EditOverlay + ManualOverlay: replaced with FoodItemFormContent wrappers.
+- ✓ "Save to pantry" from basket-edit: pantryItemId stamped on basket item;
+    DB entry updated (foodItemId + isManual:false); photo forwarded correctly.
+- ✓ addManualItem (both contexts): pantry id shared with basket item.
+- ✓ "Saved to pantry" shows checked+disabled when item already linked.
+- ✓ Photo cap 3 → 4 everywhere; ImageHero cfg3/cfg4 position tweaks.
+- ✓ LogEntryContent frequentItems via useLive(frequentItemIds).
+- ✓ Delete-item photo cleanup in LogEntryContent.
+- ✓ addPantryItem photo wiring in LogEntryContent.
+- ✓ Fast-log bypass when fromSearch=true (FoodPicker → FoodForm).
+- ✓ Nutri-scan "Change" button removed from BasketCard.
+- ✓ MeasurementTypeSelector in EditOverlay + ManualOverlay.
+- ✓ PantryScreen delete icon updated to new filled design.
+
+DONE (r121):
+- ✓ FAB fully de-animated (hapticLight + onFabMorphComplete directly).
+- ✓ BasketCard: always-visible edit+trash circular buttons (no swipe/editMode).
+- ✓ EditIcon: custom SVG from design spec (16×16 fill path).
+- ✓ All buttons + stepper container: h-10 (40px), icons 20px, stepper gap-0.
+- ✓ ImageHero: 2/3/4-photo collage with Figma-corrected bounding-box coords.
+
+DONE (r119):
+- ✓ mealData.photos?: string[] added to FoodEntry type.
+- ✓ FoodForm logBasket: saves photos[]; fallback 'Meal'→timeMealName().
+- ✓ LogEntryContent: localPhotos init chain, editable meal name, onCorrect
+    scoped to item.sourceId, correctingIdx state.
+
+DONE (r115):
+- ✓ LogEntrySheet: unified basket-style entry editor replacing EditFoodSheet
+    + MealEditSheet. All 3 cases (pantry/manual/meal) shown as cards.
+- ✓ BasketCard: "Fix/Change" button + onCorrect prop for re-describing scanned items.
+- ✓ ManualOverlay: inline CTA Button, 256×256 photo style, keyboard scroll fix.
+- ✓ Macro rounding: max 1 decimal, trailing zero trimmed (parseFloat toFixed(1)).
+
+DONE (r114):
+- ✓ Describe overlay redesign: 22-char name rules, non-food rejection, improved prompt.
+- ✓ Vercel describe-food endpoint: model changed haiku → claude-sonnet-4-6.
+- ✓ Sheet scroll: removed overflowX hidden from both scroll areas (iOS scroll chaining fix).
+- ✓ OverlayNav centering: back button wrapped in w-10 shrink-0 span.
+- ✓ AddAnotherSection: single-container pattern with bare FoodPicker prop.
+
+DONE (r111):
+- ✓ Overlay panels: swipe right → go back (touch handler on OverlayLayer).
+- ✓ OverlayNav: shared sticky title bar + scroll shadow for all overlays.
+- ✓ Single food photo: 256×256 square (was 4:3 wide).
+- ✓ Duplicate pantry item in basket → increments qty instead of new entry.
+- ✓ Meal header hidden when basket is empty.
+- ✓ Frequent-foods quick-log grid removed from Diary.
+- ✓ Log button always active (removed disabled state).
+- ✓ Recent items "+" button: solid accent bg, black icon.
+- ✓ Basket cards: removed thumbnail + protein, stepper always visible,
+    tap card (normal mode) → edit overlay, edit mode → trash only beside
+    card, swipe left reveals trash, returning from edit resets swipe state.
+- ✓ Stepper at 0 → trash icon → tap removes item.
+- ✓ "Add another item": grey bg, black text, visible in edit mode.
+- ✓ Expanded picker: heading row with X left + title centred.
+- ✓ Method cards: text-content (not secondary), overflow clipping fixed.
+- ✓ ManualOverlay: photo upload added (same style as EditOverlay).
+- ✓ EditOverlay: sticky nav via OverlayNav, non-sticky Save + Cancel,
+    photo trash icon + "Change photo" white-border button.
+- ✓ PantryScreen FoodItemForm: updated to new EditOverlay-style design.
+
+DONE (r108):
+- ✓ Add-Entry design spec written (leve-add-entry-design-spec.docx).
+- ✓ Interactive HTML prototype built (add-entry-prototype.html).
+
+DONE (r107):
+- ✓ MacroDetailSheet horizontal clip without blocking vertical scroll.
+- ✓ BreakdownSheet intro text now hides when info panel slides in.
+- ✓ GoalSetupScreen Section 2 pre-fills from saved profile on every open.
+- ✓ Gauge center number sign removed; sub-labels consistent.
+- ✓ Custom filled info icon deployed everywhere.
+
+DONE (r106):
+- ✓ KEYBOARD/VIEW CONFLICT: content jumping + black void when keyboard opened
+  in sheets. Fixed via @capacitor/keyboard resize:'none' + Capacitor
+  keyboardWillShow/Hide events + scrollFocusedAboveKeyboard().
+
+DEFERRED V1.5+: JSON import, BMR auto-calibration, full tablet
+layouts, per-piece measurement types, time-of-day food suggestions.
+
+----------------------------------------------------------------
+RECENT ROUNDS (3 most recent, older entries in CHANGELOG.txt)
+----------------------------------------------------------------
+
+================================================================
+ROUND 206: PROJECT MOVED OUT OF iCLOUD SYNC; ROOT-CAUSED RECURRING BUILD FAILURES (2026-07-12)
+================================================================
+Files: ANDROID.md, TESTFLIGHT.md, HEALTHKIT.md
+
+- CONTEXT: while building the round 205 (versionCode-bumped) tester
+  release, Marco hit "' ' is not a valid file-based resource name
+  character" build failures TWICE in a row, even right after cleaning
+  android/build -- the same class of error that broke a build once
+  before, much earlier in this project (a stray config 2.xml).
+- ROOT CAUSE FOUND: the project lived at ~/Documents/leve, and a Finder
+  screenshot Marco shared showed a duplicate "build 2" folder sitting
+  alongside android/build -- a classic iCloud Drive "Desktop &
+  Documents Folders" sync-conflict artifact. iCloud was fighting
+  Gradle for the same files while it built (Gradle rewrites
+  android/build/ constantly; iCloud creates a "` 2`"-suffixed duplicate
+  whenever it sees a write conflict mid-sync), and had also recreated
+  the exact same android/app/src/main/res/xml/config 2.xml that broke
+  a build earlier in this project -- confirming it wasn't a one-off,
+  it's a standing hazard for as long as the project stays inside an
+  iCloud-synced folder.
+- FIX: Marco moved the project out of iCloud sync entirely:
+  ~/Documents/leve -> ~/leve. Updated every doc that hardcoded the old
+  path (ANDROID.md, TESTFLIGHT.md, HEALTHKIT.md -- CLAUDE.md doesn't
+  reference an absolute path, unaffected) to `~/leve`. This should stop
+  the duplicate-file class of build failure for good, rather than
+  needing a manual clean (rm -rf android/build android/app/build
+  android/.gradle + delete the stray file) every time it recurs.
+- NOTE FOR FUTURE SESSIONS: if a "not a valid file-based resource name"
+  / "Failed file name validation" Gradle error ever comes back, check
+  for a stray space-suffixed duplicate file first (Mac's iCloud/Finder
+  duplicate-naming pattern) before assuming it's a real source problem
+  -- delete the duplicate, clean android/build + android/app/build +
+  android/.gradle, and rebuild.
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped (unchanged --
+  docs-only change, no app code touched).
+
+================================================================
+ROUND 205: ANDROID versionCode/versionName BUMPED FOR TESTER RELEASES (2026-07-12)
+================================================================
+Files: android/app/build.gradle
+
+- CONTEXT: Marco uploaded a new Firebase App Distribution release (with
+  round 204's shared-beta flag baked in) and noticed it still showed as
+  "1.0 (1)", same as the previous release his 3 testers had already
+  installed.
+- CAUSE: android/app/build.gradle's versionCode/versionName were never
+  bumped from their initial scaffold values (versionCode 1, versionName
+  "1.0") across any Android release so far -- every release built to
+  date has been identical on this front. Android treats a same-
+  versionCode APK as not-newer; installing it over an existing install
+  of the same versionCode can silently fail or get refused on some
+  devices (the same class of "app not installed" error one tester hit
+  before, for an unrelated reason).
+- FIX: versionCode 1->2, versionName "1.0"->"1.1". Added a reminder to
+  ANDROID.md's build step to bump this before every future Android
+  tester release, same discipline as iOS's build-number bump per
+  TestFlight archive.
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped (unchanged --
+  Gradle-only change).
+
+================================================================
+ROUND 204: "ADD ANOTHER ITEM" COLLAPSE/EXPAND LOGIC FIXED (2026-07-12)
+================================================================
+Files: src/ui/components/AddEntrySheet.tsx
+
+- CONTEXT: Marco wanted the "+ Add another item" picker (Day's-log
+  basket, both the fresh-add FoodForm and the edit-existing-entry
+  LogEntryContent -- two separate copies of the same pattern) to
+  follow one rule: collapsed by default, only stays expanded while
+  actively "operating" it -- i.e. if you cancel out of a method you
+  opened it into (tap Photo, the album opens, tap X), it should resume
+  right where you left off; anything else should leave it collapsed.
+  Asked for a careful-mode pass: understand the actual state logic
+  before changing anything, present it for feedback first.
+- ROOT CAUSE (FoodForm): the shared overlayBack() handler, called
+  whenever ANY full-panel overlay closes (Describe, Manual, Edit),
+  unconditionally reopened the picker whenever the basket wasn't empty
+  -- conflating two unrelated flows. Editing an existing basket item
+  (tap its edit icon) or "fix with AI" re-correcting one (its own
+  onCorrect button) have nothing to do with the "Add another item"
+  picker, but since the basket is non-empty essentially every time you
+  edit/correct something already in it, doing either always reopened
+  the picker as a side effect -- matching exactly what Marco described
+  ("came back from a food item detail... it's expanded").
+- SECOND GAP (opposite direction, both copies): handleCamera/
+  handlePhoto set pickerOpen(false) *before* launching the native
+  camera/library, and nothing ever reopened it if the user canceled
+  without picking a photo -- so canceling a Camera/Photo pick actually
+  lost your place, the opposite of what Marco wanted for that exact
+  case.
+- BONUS BUG FOUND WHILE TRACING THIS: overlayBack() never cleared
+  correctingIdx. Canceling out of a "fix with AI" re-scan (Describe in
+  correcting mode) left correctingIdx pointing at that basket index
+  indefinitely -- the next unrelated Describe-add via the picker would
+  have silently replaced that old item instead of adding a new one.
+  Fixed as part of the same change (now cleared unconditionally).
+- FIX: overlayBack() now only reopens the picker when backing out of an
+  add-attempt reached *through* it -- Describe in normal add-mode
+  (correctingIdx === null) or Manual -- never when activeOverlay ===
+  'edit' or correctingIdx is set, regardless of whether that flow ended
+  in cancel or save. Also dropped the "only if basket.length > 0"
+  condition -- canceling an add attempt should resume the picker
+  regardless of what's already in the basket. handleCamera/handlePhoto
+  (both copies) now call setPickerOpen(true) when the native
+  capture returns null (user canceled), matching the same resume
+  behavior. Applied symmetrically in both FoodForm and LogEntryContent
+  -- they're separate, non-shared copies of this pattern.
+- NOT (YET) TOUCHED: Pantry's own "Create a meal" / "Add another item"
+  sections (PantryFoodItemDetail.tsx, PantryMealDetail.tsx) use the
+  same AddAnotherSection component but their own local open-state never
+  reopens on cancel today either -- left as-is pending Marco's call on
+  whether to bring those in line too (asked, not yet confirmed).
+- NOT YET DEVICE-CONFIRMED -- verified via code review and the existing
+  test suite (no new automated coverage added, this is UI-interaction
+  state logic verified by tracing, matching the project's existing
+  approach for this kind of fix -- see KNOWN GAPS).
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped (unchanged).
+
+================================================================
+ROUND 193: DIARY SIGN-DISPLAY FIX; WEEKLY-STRIP PER-DAY BMR FIX; GAIN PACE RENAME; WHEELPICKER HAPTICS; SHARED-BETA MODE FOR EXTERNAL TESTERS (2026-07-09)
+================================================================
+Files: src/ui/screens/TodayScreen.tsx, src/ui/kit/WheelPicker.tsx,
+       src/domain/goal.ts, src/ui/screens/GoalSetupScreen.tsx,
+       src/lib/sharedBeta.ts (new), src/data/db.ts, src/lib/apiKey.ts,
+       src/ui/components/DevMenu.tsx, src/ui/screens/AccountScreen.tsx,
+       .env.example, TESTFLIGHT.md
+
+- DAY'S LOG SIGN DISPLAY FIXED: the gauge card's Food/Activity stat row
+  was already correct and goal-type-agnostic (Food always plain, Activity
+  always "−"), but the Day's log list below it branched on gainGoal and
+  had both signs backwards for lose_by_date/maintain (Food showed "−",
+  Activity showed "+"), only accidentally correct for gain_by_date.
+  Removed the branching entirely so the list always matches the gauge
+  card, across all three goal types.
+- WEEKLY STRIP PER-DAY BMR FIX: the week strip's succeed/fail dots used a
+  single flat user.bmr for all 21 days, while the day panel/gauge card
+  (via useDay -> bmrForDate) computes BMR per day from whichever weight
+  was on file as of that specific date. Any day whose historical weight
+  differed from the current one could disagree between the two (Marco
+  hit this testing with a 5-day-old start date and mid-test weight
+  changes: gauge card said on-target, strip showed a fail X). Strip now
+  calls bmrForDate(d, weights, user) per day, matching the day panel
+  exactly, with the same estimate-from-weight fallback for incomplete
+  profiles.
+- GAIN PACE TIERS RENAMED: Guided goal-setup's Gain "Pace" tiers were
+  Lean/Steady/Bulk (GAIN_PACES in domain/goal.ts) -- body-composition
+  outcome language, inconsistent with Lose's Relaxed/Steady/Ambitious
+  (effort/speed language), even though both are mechanically the same
+  thing: three tiers ordered slow-to-fast driving an end date + daily
+  kcal. Renamed to Relaxed/Steady/Ambitious to match Lose. IDs/values
+  unchanged (kgPerMonth, surplusFloor/Ceiling); nothing persisted
+  references the old ids (gainPace is transient setup-screen state
+  only), so no migration needed. GoalSetupScreen's default state
+  updated 'lean' -> 'relaxed' to match.
+- WHEELPICKER HAPTICS: all 5 real user-driven onChange sites across
+  WheelPicker's single-wheel and split-wheel (empty-state and normal)
+  modes now call hapticLight(), matching the app-wide rule that
+  interactive elements fire haptics on tap. The two mount-time
+  auto-sync useEffect calls (snapping an out-of-range value on load)
+  deliberately do NOT fire haptics, since nothing was tapped.
+- SHARED-BETA MODE (new, for handing this app to external testers
+  without requiring their own Anthropic key): a single build-time
+  switch, VITE_SHARED_BETA (+ VITE_SHARED_BETA_ANTHROPIC_KEY) in
+  .env.local (gitignored, never committed -- see .env.example), OFF
+  unless explicitly set so Marco's own day-to-day build is never
+  affected. New src/lib/sharedBeta.ts is the single source of truth for
+  both flags. When on: a fresh install with no explicit profile choice
+  yet defaults into the Test account instead of Real (src/data/db.ts's
+  activeProfile -- an explicit stored choice via the Developer menu's
+  profile switcher always wins over this default either way); AI Food
+  Scan auto-connects using the shared key while on the Test profile
+  only, never persisted to the keychain (src/lib/apiKey.ts's
+  withSharedBetaFallback); the manual "AI Food Scan" Settings row is
+  hidden entirely (AccountScreen.tsx), since there's nothing for a
+  tester to configure. The hidden Developer menu (triple-tap Account
+  title) shows a warning banner whenever a build has this mode baked
+  in, as a safety net against forgetting to turn it off before a
+  regular sync. TESTFLIGHT.md documents the full on/archive/off
+  workflow, including that ending the test for everyone (at any time,
+  no app update needed) is done by deleting the temporary key in the
+  Claude Console -- instant and permanent; there's no per-key spend
+  limit, so a dedicated Workspace spend limit, or prepaid credits with
+  auto-reload off, is the safety net while the key is still live.
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped (unchanged --
+  these are UI-display/derivation fixes and a new opt-in build flag,
+  verified by tracing the existing logic and matching it against the
+  on-device repro Marco described, not new automated tests; see
+  KNOWN GAPS).
+
+================================================================
+ROUND 192: TESTFLIGHT UPLOAD FIX; EXPORT-JSON iOS FIX; STALE APP NAME (2026-07-08)
+================================================================
+Files: src/data/exportJson.ts, src/ui/screens/AccountScreen.tsx,
+       ios/App/App/Info.plist, ios/App/App.xcodeproj/project.pbxproj,
+       HEALTHKIT.md, package.json (added @capacitor/filesystem,
+       @capacitor/share)
+
+- EXPORT ALL DATA (JSON) FIXED ON iOS: Account > Developer > "Export all
+  data (JSON)" did nothing when tapped on device. Root cause: it used a
+  browser-style <a download> click trigger, which is a no-op inside the
+  app's iOS webview (no Downloads folder, no default handler for it
+  there); it only ever worked in a desktop browser during web dev.
+  Rewrote exportJson.ts to use @capacitor/filesystem (write the JSON to
+  the app's cache dir) plus @capacitor/share (open the native iOS share
+  sheet) on native platforms, so the export now surfaces Save to Files,
+  AirDrop, etc. The plain browser download path is kept as a fallback
+  for web dev. AccountScreen's onClick now catches/logs a rejected
+  promise instead of letting it fail silently. Confirmed working on
+  device.
+- TESTFLIGHT UPLOAD FAILURE FIXED: first upload attempt was rejected by
+  Apple's automated Info.plist scan with "Missing purpose string,
+  NSHealthUpdateUsageDescription". leve's own code only ever requests
+  read access to Health (weight, calories), never write, but the
+  @capgo/capacitor-health plugin links HealthKit's write-capable APIs
+  regardless, and Apple's static binary scan requires a purpose string
+  for any linked API, not just the ones actually called. Added
+  NSHealthUpdateUsageDescription to Info.plist stating leve does not
+  write to Health. HEALTHKIT.md updated to note both usage strings are
+  required and why. Hit one snag getting this onto the device: Xcode's
+  Info tab had reordered (not changed) the existing keys in the local
+  Info.plist, which blocked `git pull` until the local copy was
+  discarded via `git checkout --`, since git won't silently overwrite
+  uncommitted local changes even when they are purely cosmetic. Second
+  upload attempt cleared the check and is now Processing in App Store
+  Connect.
+- STALE APP DISPLAY NAME FIXED: the Xcode target's
+  INFOPLIST_KEY_CFBundleDisplayName build setting (in
+  project.pbxproj, both Debug and Release configs) still read "nutri"
+  from before the app was renamed to leve, overriding Info.plist's own
+  already-correct CFBundleDisplayName. Updated both to "leve".
+- App Category (Healthcare & Fitness) was set directly in App Store
+  Connect's web dashboard, unrelated to any file in this repo, no code
+  change needed.
+- tsc: clean. lint: clean. vitest: 57 passed, 8 skipped (unchanged).
